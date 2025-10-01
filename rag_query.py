@@ -18,7 +18,9 @@ from config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_MODEL_FILENAME,
+    DEFAULT_NUM_THREADS,
     DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_K,
     LOG_DIR,
     MODELS_DIR,
     ensure_directories,
@@ -117,8 +119,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--threads",
         type=int,
-        default=32,
-        help="Number of CPU threads for inference (adjust to your CPU).",
+        default=DEFAULT_NUM_THREADS,
+        help=(
+            "Number of CPU threads for inference. Defaults to RAG_NUM_THREADS or "
+            f"{DEFAULT_NUM_THREADS}."
+        ),
     )
     parser.add_argument(
         "--ctx",
@@ -129,8 +134,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=4,
-        help="Number of documents to retrieve per query.",
+        default=DEFAULT_TOP_K,
+        help=(
+            "Number of documents to retrieve per query. Defaults to RAG_TOP_K or "
+            f"{DEFAULT_TOP_K}."
+        ),
     )
     return parser.parse_args()
 

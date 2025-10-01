@@ -6,7 +6,7 @@ from pathlib import Path
 
 from llama_cpp import Llama
 
-from config import DEFAULT_MODEL_FILENAME, MODELS_DIR
+from config import DEFAULT_MODEL_FILENAME, DEFAULT_NUM_THREADS, MODELS_DIR
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,8 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--threads",
         type=int,
-        default=32,
-        help="CPU threads to use during inference.",
+        default=DEFAULT_NUM_THREADS,
+        help=(
+            "CPU threads to use during inference. Defaults to RAG_NUM_THREADS or "
+            f"{DEFAULT_NUM_THREADS}."
+        ),
     )
     return parser.parse_args()
 
