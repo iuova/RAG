@@ -1,86 +1,227 @@
-import os
+"""Create or update a ChromaDB index for the local RAG pipeline."""
+from __future__ import annotations
+
+import argparse
 import json
 import logging
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, List, Sequence
+
 from tqdm import tqdm
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ------------- Конфигурация -------------
-DATA_JSONL = Path(r"C:\Users\O.Iunina\Desktop\Projects\RAG\data\data.jsonl")
-CHROMA_DB_DIR = Path(r"C:\Users\O.Iunina\Desktop\Projects\RAG\chroma_db")
-COLLECTION = "docs"
-LOG_FILE = Path(r"C:\Users\O.Iunina\Desktop\Projects\RAG\rag_index.log")
-
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
-BATCH_SIZE = 100
-
-# ------------- Логирование -------------
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
-                    format="%(asctime)s - %(levelname)s - %(message)s")
-logging.info("=== Запуск индексации ===")
-
-# ------------- Проверка данных -------------
-if not DATA_JSONL.exists():
-    logging.error(f"Файл {DATA_JSONL} не найден")
-    raise FileNotFoundError(f"Файл {DATA_JSONL} не найден")
-
-# ------------- Загрузка модели -------------
-embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-small-en",
-    model_kwargs={"device": "cpu"},
-    encode_kwargs={"normalize_embeddings": True}
+from config import (
+    CHROMA_DB_DIR,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_COLLECTION_NAME,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_JSONL,
+    LOG_DIR,
+    ensure_directories,
 )
 
-# ------------- Подключение Chroma -------------
-vectorstore = Chroma(
-    persist_directory=str(CHROMA_DB_DIR),
-    collection_name=COLLECTION,
-    embedding_function=embedding_model
-)
 
-# ------------- Разбивка текста на чанки -------------
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=CHUNK_SIZE,
-    chunk_overlap=CHUNK_OVERLAP,
-    length_function=len,
-    add_start_index=True
-)
+@dataclass(frozen=True)
+class DocumentRecord:
+    """A single source document with optional metadata."""
 
-logging.info(f"Загрузка данных из {DATA_JSONL}")
-print(f"Загрузка данных из {DATA_JSONL}...")
+    text: str
+    metadata: dict
 
-documents = []
-with open(DATA_JSONL, "r", encoding="utf-8") as f:
-    for line in f:
-        try:
-            obj = json.loads(line)
-            text = obj.get("text") or obj.get("content") or ""
-            if text.strip():
-                documents.append(text)
-        except json.JSONDecodeError:
-            logging.warning("Ошибка JSON в строке, пропускаем")
 
-logging.info(f"Всего документов: {len(documents)}")
-print(f"Всего документов: {len(documents)}")
+def load_jsonl_documents(path: Path) -> List[DocumentRecord]:
+    """Load text entries from a JSONL file."""
 
-# ------------- Чанкинг -------------
-chunks = []
-for doc in tqdm(documents, desc="Разбивка на чанки"):
-    chunks.extend(text_splitter.split_text(doc))
+    documents: List[DocumentRecord] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as exc:
+                logging.warning("JSON decode error in %s:%s: %s", path, line_number, exc)
+                continue
 
-logging.info(f"Всего чанков: {len(chunks)}")
-print(f"Всего чанков: {len(chunks)}")
+            text = obj.get("text") or obj.get("content") or obj.get("body")
+            if not isinstance(text, str) or not text.strip():
+                continue
 
-# ------------- Индексация (пакетами) -------------
-print("Добавляем данные в Chroma...")
-for i in tqdm(range(0, len(chunks), BATCH_SIZE), desc="Индексация"):
-    batch = chunks[i:i+BATCH_SIZE]
-    vectorstore.add_texts(batch)
+            metadata = {
+                "source": path.name,
+                "source_path": str(path),
+                "line": line_number,
+            }
+            if "id" in obj:
+                metadata["document_id"] = str(obj["id"])
+            if "title" in obj and obj["title"]:
+                metadata["title"] = str(obj["title"])
 
-# ------------- Сохранение -------------
-vectorstore.persist()
-logging.info("✅ Индексация завершена")
-print(f"✅ Индексация завершена. База сохранена в: {CHROMA_DB_DIR}")
+            documents.append(DocumentRecord(text=text.strip(), metadata=metadata))
+    return documents
+
+
+def iter_documents(paths: Iterable[Path]) -> List[DocumentRecord]:
+    """Load documents from a list of files."""
+
+    docs: List[DocumentRecord] = []
+    for path in paths:
+        if not path.exists():
+            logging.warning("File %s not found, skipping", path)
+            continue
+        if path.suffix.lower() == ".jsonl":
+            docs.extend(load_jsonl_documents(path))
+        elif path.suffix.lower() in {".txt", ".md"}:
+            text = path.read_text(encoding="utf-8").strip()
+            if not text:
+                continue
+            docs.append(
+                DocumentRecord(
+                    text=text,
+                    metadata={
+                        "source": path.name,
+                        "source_path": str(path),
+                    },
+                )
+            )
+        else:
+            logging.warning("Unsupported file extension for %s, skipping", path)
+    return docs
+
+
+def chunk_documents(documents: Sequence[DocumentRecord]) -> tuple[List[str], List[dict]]:
+    """Split documents into chunks while preserving metadata."""
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=DEFAULT_CHUNK_SIZE,
+        chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+        length_function=len,
+        add_start_index=True,
+    )
+
+    chunk_texts: List[str] = []
+    chunk_metadata: List[dict] = []
+
+    for doc_index, document in enumerate(
+        tqdm(documents, desc="Разбивка на чанки", unit="док")
+    ):
+        splits = splitter.split_text(document.text)
+        for chunk_index, chunk in enumerate(splits):
+            metadata = dict(document.metadata)
+            metadata.update(
+                {
+                    "chunk_index": chunk_index,
+                    "chunk_id": f"{metadata.get('document_id', metadata.get('source', doc_index))}:{chunk_index}",
+                }
+            )
+            chunk_texts.append(chunk)
+            chunk_metadata.append(metadata)
+
+    return chunk_texts, chunk_metadata
+
+
+def build_vector_store(
+    documents: Sequence[DocumentRecord], collection_name: str, batch_size: int
+) -> None:
+    """Persist documents inside a Chroma collection."""
+
+    if not documents:
+        raise ValueError("No documents were loaded for indexing.")
+
+    chunk_texts, chunk_metadata = chunk_documents(documents)
+    logging.info("Prepared %s chunks", len(chunk_texts))
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name=DEFAULT_EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+    vector_store = Chroma(
+        persist_directory=str(CHROMA_DB_DIR),
+        collection_name=collection_name,
+        embedding_function=embeddings,
+    )
+
+    logging.info(
+        "Adding %s chunks to Chroma in batches of %s", len(chunk_texts), batch_size
+    )
+    for start in tqdm(
+        range(0, len(chunk_texts), batch_size),
+        desc="Индексация",
+        unit="чанк",
+    ):
+        end = start + batch_size
+        vector_store.add_texts(
+            texts=chunk_texts[start:end], metadatas=chunk_metadata[start:end]
+        )
+
+    vector_store.persist()
+    logging.info("Index persisted to %s", CHROMA_DB_DIR)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build the local Chroma index for RAG.")
+    parser.add_argument(
+        "inputs",
+        nargs="*",
+        type=Path,
+        default=[DEFAULT_JSONL],
+        help="Files to ingest (JSONL or TXT). Defaults to data/data.jsonl.",
+    )
+    parser.add_argument(
+        "--collection",
+        default=DEFAULT_COLLECTION_NAME,
+        help=f"Chroma collection name. Default: {DEFAULT_COLLECTION_NAME}.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"Number of chunks per write batch. Default: {DEFAULT_BATCH_SIZE}.",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Удалить существующую коллекцию перед индексацией.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    ensure_directories()
+    log_path = LOG_DIR / "rag_index.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+        force=True,
+    )
+
+    args = parse_args()
+    logging.info("Starting indexing run")
+    logging.info("Input files: %s", ", ".join(str(p) for p in args.inputs))
+
+    if args.reset and CHROMA_DB_DIR.exists():
+        logging.info("Resetting Chroma directory %s", CHROMA_DB_DIR)
+        shutil.rmtree(CHROMA_DB_DIR)
+        CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
+
+    documents = iter_documents(args.inputs)
+    logging.info("Loaded %s source documents", len(documents))
+
+    build_vector_store(documents, args.collection, args.batch_size)
+    print(f"✅ Индексация завершена. База сохранена в: {CHROMA_DB_DIR}")
+
+
+if __name__ == "__main__":
+    main()

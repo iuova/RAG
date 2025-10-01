@@ -130,6 +130,7 @@ dmypy.json
 
 # RAG specific
 chroma_db/
+logs/
 *.log
 rag_index.log
 rag_query.log
@@ -143,6 +144,8 @@ models/
 data/
 *.jsonl
 *.txt
+!requirements.txt
+!examples/*.jsonl
 
 # Python executable
 python
