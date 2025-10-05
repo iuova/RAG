@@ -220,7 +220,7 @@ def main() -> None:
     logging.info("Loaded %s source documents", len(documents))
 
     build_vector_store(documents, args.collection, args.batch_size)
-    print(f"✅ Индексация завершена. База сохранена в: {CHROMA_DB_DIR}")
+    print(f"Индексация завершена. База сохранена в: {CHROMA_DB_DIR}")
 
 
 if __name__ == "__main__":
