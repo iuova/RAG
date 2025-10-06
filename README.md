@@ -48,7 +48,6 @@ python rag_query_final.py
 **Альтернативы:**
 - `rag_query_hybrid.py` - гибридный подход
 - `rag_query_simple.py` - простой поиск
-- `rag_query_transformers.py` - с transformers
 
 Подробная инструкция: `docs/llm_rag_without_build_tools.md`
 

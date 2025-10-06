@@ -49,6 +49,8 @@ python rag_query_hybrid.py --question "электропитание судна" 
 python rag_query_simple.py --question "докование судна" --top-k 3
 ```
 
+**Примечание**: Остальные варианты (rag_query_transformers.py, rag_query_llm.py, rag_query_simple_llm.py) были удалены как дублирующиеся.
+
 ## Установка и настройка
 
 ### 1. Базовые зависимости

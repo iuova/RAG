@@ -213,6 +213,68 @@
 
 Система готова к использованию в продакшене без llama.cpp.
 
+## [2025-01-28 17:00:00]
+Проведена очистка проекта от неиспользуемых файлов.
+
+### Выполненные задачи:
+
+**Анализ проекта:**
+- ✅ Проанализированы все файлы проекта
+- ✅ Определены основные рабочие файлы
+- ✅ Найдены дублирующиеся и неиспользуемые файлы
+- ✅ Создан план очистки
+
+**Удаленные файлы (14):**
+- rag_query.py - использует llama.cpp (не работает)
+- rag_query_transformers.py - дублирует rag_query_final.py
+- rag_query_llm.py - дублирует rag_query_final.py
+- rag_query_simple_llm.py - дублирует rag_query_hybrid.py
+- scripts/install_vs_build_tools.py - не используется
+- scripts/setup_windows.ps1 - не используется
+- scripts/test_model.py - не используется
+- convert_txt_to_jsonl.py - дублирует simple_convert.py
+- fix_encoding.py - временный файл
+- test_llama_cpp.py - тестовый файл
+- test_rag_system.py - тестовый файл
+- data/Data_5000 .txt - исходный файл (есть test_data.jsonl)
+- models/Qwen2.5-7B-Instruct/ - большая модель (~15 GB)
+- analyze_project.py - временный файл анализа
+
+**Удаленные папки (4):**
+- llama.cpp/ - не используется без llama-cpp-python
+- notebooks/ - пустая папка
+- src/ - пустая папка
+- tests/ - пустая папка
+
+**Освобождено места:**
+- ~15 GB (в основном модели)
+- Удалено 14 файлов и 4 папки
+- Проект стал чище и компактнее
+
+**Обновленная документация:**
+- ✅ Обновлен README.md
+- ✅ Обновлена docs/llm_rag_without_build_tools.md
+- ✅ Убраны ссылки на удаленные файлы
+
+**Итоговая структура проекта:**
+- config.py - основная конфигурация
+- rag_index.py - индексация документов
+- rag_query_final.py - основной RAG (рекомендуется)
+- rag_query_hybrid.py - гибридный RAG
+- rag_query_simple.py - простой поиск
+- embedding_utils.py - утилиты для embeddings
+- requirements.txt - зависимости
+- README.md - документация
+- dev-journal.md - журнал разработки
+- docs/ - документация
+- examples/ - примеры
+- reports/ - отчеты
+- scripts/ - скрипты установки
+- data/ - тестовые данные
+- logs/ - логи
+
+Проект очищен и оптимизирован для продакшена.
+
 ## [2025-01-27 16:45:00]
 Выполнено слияние ветки codex/-llm-rag в main.
 
