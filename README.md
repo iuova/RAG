@@ -24,14 +24,34 @@ RAG/
 └── ANALYSIS.md               # Подробный обзор архитектуры проекта
 ```
 
-## Быстрый старт
+## Установка
 
-1. **Установка зависимостей**
+### Базовые зависимости
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Установка llama.cpp (опционально)
+Для полной функциональности с llama.cpp:
+
+**Автоматическая установка:**
+```bash
+python scripts/install_llama_cpp.py
+```
+
+**Ручная установка:**
+1. Установите Visual Studio Build Tools
+2. Установите llama-cpp-python:
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
    ```
+3. Скачайте GGUF модель в папку `models/`
+
+Подробная инструкция: `docs/llama_cpp_installation_guide.md`
+
+## Быстрый старт
 
 2. **Подготовка данных**
    - Сформируйте JSONL-файл с документами вида:
@@ -47,7 +67,9 @@ RAG/
    Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`.
 
 4. **Запрос с генерацией ответа**
-   - Подготовьте GGUF-модель и распакуйте её в каталог `models/` (см. инструкции в `llama.cpp/README.md`).
+   - **Для llama.cpp**: Установите llama-cpp-python и подготовьте GGUF-модель (см. `docs/llama_cpp_installation_guide.md`)
+   - **Для transformers**: Используйте `rag_query_transformers.py` (работает сразу)
+   - **Простой поиск**: Используйте `rag_query_simple.py` (без генерации)
    - Запустите CLI:
      ```bash
      python rag_query.py --collection demo --question "Что содержит пример?"
