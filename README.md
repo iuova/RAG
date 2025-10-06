@@ -33,21 +33,32 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### LLM+RAG без llama.cpp (Рекомендуется)
+Для полной функциональности LLM+RAG без Visual Studio Build Tools:
+
+**Готовое решение:**
+```bash
+# Интеллектуальный RAG с генерацией ответов
+python rag_query_final.py --question "ваш вопрос"
+
+# Интерактивный режим
+python rag_query_final.py
+```
+
+**Альтернативы:**
+- `rag_query_hybrid.py` - гибридный подход
+- `rag_query_simple.py` - простой поиск
+- `rag_query_transformers.py` - с transformers
+
+Подробная инструкция: `docs/llm_rag_without_build_tools.md`
+
 ### Установка llama.cpp (опционально)
-Для полной функциональности с llama.cpp:
+Для работы с llama.cpp (требует Visual Studio Build Tools):
 
 **Автоматическая установка:**
 ```bash
 python scripts/install_llama_cpp.py
 ```
-
-**Ручная установка:**
-1. Установите Visual Studio Build Tools
-2. Установите llama-cpp-python:
-   ```bash
-   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-   ```
-3. Скачайте GGUF модель в папку `models/`
 
 Подробная инструкция: `docs/llama_cpp_installation_guide.md`
 
