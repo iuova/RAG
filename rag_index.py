@@ -11,8 +11,6 @@ from typing import Iterable, List, Sequence
 
 from tqdm import tqdm
 from chromadb import PersistentClient
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from embedding_utils import HuggingFaceEncoder
 
 from config import (
@@ -96,15 +94,59 @@ def iter_documents(paths: Iterable[Path]) -> List[DocumentRecord]:
     return docs
 
 
+def split_text(
+    text: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> List[str]:
+    """Split text into overlapping chunks without external dependencies.
+
+    The logic mimics the behaviour of the old LangChain splitter by
+    respecting the configured chunk size and overlap. The implementation
+    keeps whitespace boundaries when possible so that the resulting chunks
+    remain readable while guaranteeing forward progress.
+    """
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if chunk_overlap < 0:
+        raise ValueError("chunk_overlap must be non-negative")
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+
+    normalized = text.strip()
+    if not normalized:
+        return []
+
+    chunks: List[str] = []
+    text_length = len(normalized)
+    start = 0
+
+    while start < text_length:
+        end = min(start + chunk_size, text_length)
+        chunk = normalized[start:end]
+
+        if end < text_length:
+            # Try to keep whole words by moving the cut to the last space
+            # within the chunk, but only if this still leaves at least
+            # 60 % of the original chunk to avoid tiny fragments.
+            relative_limit = int(chunk_size * 0.6)
+            split_at = chunk.rfind(" ")
+            if relative_limit > 0 and split_at >= relative_limit:
+                end = start + split_at
+                chunk = normalized[start:end]
+
+        chunks.append(chunk.strip())
+
+        if end >= text_length:
+            break
+        start = max(end - chunk_overlap, 0)
+
+    return [c for c in chunks if c]
+
+
 def chunk_documents(documents: Sequence[DocumentRecord]) -> tuple[List[str], List[dict]]:
     """Split documents into chunks while preserving metadata."""
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=DEFAULT_CHUNK_SIZE,
-        chunk_overlap=DEFAULT_CHUNK_OVERLAP,
-        length_function=len,
-        add_start_index=True,
-    )
 
     chunk_texts: List[str] = []
     chunk_metadata: List[dict] = []
@@ -112,7 +154,11 @@ def chunk_documents(documents: Sequence[DocumentRecord]) -> tuple[List[str], Lis
     for doc_index, document in enumerate(
         tqdm(documents, desc="Разбивка на чанки", unit="док")
     ):
-        splits = splitter.split_text(document.text)
+        splits = split_text(
+            document.text,
+            chunk_size=DEFAULT_CHUNK_SIZE,
+            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+        )
         for chunk_index, chunk in enumerate(splits):
             metadata = dict(document.metadata)
             metadata.update(
