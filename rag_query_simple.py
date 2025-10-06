@@ -6,8 +6,9 @@ import logging
 from pathlib import Path
 from typing import List
 
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from chromadb import PersistentClient
+
+from embedding_utils import HuggingFaceEncoder
 
 from config import (
     CHROMA_DB_DIR,
@@ -32,23 +33,34 @@ def format_simple_response(question: str, contexts: List[str]) -> str:
 """
 
 
-def run_simple_query(retriever: Chroma, question: str, top_k: int) -> None:
+def run_simple_query(
+    collection, encoder: HuggingFaceEncoder, question: str, top_k: int
+) -> None:
     """Выполняет простой поиск без генерации ответа."""
-    docs = retriever.similarity_search(question, k=top_k)
-    if not docs:
+
+    query_embedding = encoder.encode_one(question).reshape(1, -1).tolist()
+    results = collection.query(
+        query_embeddings=query_embedding,
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
+    )
+
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    if not documents:
         print("Документов по запросу не найдено. Убедитесь, что индекс создан.")
         return
 
-    contexts = [doc.page_content for doc in docs]
-    response = format_simple_response(question, contexts)
+    response = format_simple_response(question, documents)
     print(response)
-    
-    # Показываем источники
-    print("\n" + "="*50)
+
+    print("\n" + "=" * 50)
     print("ИСТОЧНИКИ:")
-    for i, doc in enumerate(docs, 1):
-        source = doc.metadata.get('source', 'Неизвестно')
-        print(f"{i}. {source}")
+    distances = results.get("distances", [[]])[0]
+    for i, metadata in enumerate(metadatas, 1):
+        source = metadata.get("source", "Неизвестно") if metadata else "Неизвестно"
+        distance = distances[i - 1] if i - 1 < len(distances) else float("nan")
+        print(f"{i}. {source} (distance={distance:.4f})")
 
 
 def main():
@@ -77,17 +89,15 @@ def main():
 
     # Загружаем embeddings и векторную базу
     print("Загружаем модель embeddings...")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=DEFAULT_EMBEDDING_MODEL,
-        model_kwargs={'device': 'cpu'}
-    )
+    encoder = HuggingFaceEncoder(DEFAULT_EMBEDDING_MODEL, device="cpu")
 
     print("Подключаемся к векторной базе...")
-    vector_store = Chroma(
-        persist_directory=str(CHROMA_DB_DIR),
-        embedding_function=embeddings,
-        collection_name=args.collection
-    )
+    client = PersistentClient(path=str(CHROMA_DB_DIR))
+    try:
+        collection = client.get_collection(args.collection)
+    except Exception:
+        print(f"Коллекция '{args.collection}' не найдена.")
+        return
 
     print("Система готова к работе!")
     print("Введите ваш вопрос (или 'exit' для выхода):")
@@ -101,7 +111,7 @@ def main():
                 continue
                 
             print(f"\nИщем релевантные документы для: '{question}'")
-            run_simple_query(vector_store, question, args.top_k)
+            run_simple_query(collection, encoder, question, args.top_k)
             
         except KeyboardInterrupt:
             print("\n\nДо свидания!")

@@ -27,6 +27,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.venv/
 
 # IDE
 .vscode/
@@ -53,6 +54,7 @@ logs/
 # Database
 *.db
 *.sqlite3
+chroma_db/
 
 # Jupyter Notebook
 .ipynb_checkpoints

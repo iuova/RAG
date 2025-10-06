@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Iterable, List, Sequence
 
 from tqdm import tqdm
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from chromadb import PersistentClient
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from embedding_utils import HuggingFaceEncoder
 
 from config import (
     CHROMA_DB_DIR,
@@ -137,17 +138,21 @@ def build_vector_store(
     chunk_texts, chunk_metadata = chunk_documents(documents)
     logging.info("Prepared %s chunks", len(chunk_texts))
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name=DEFAULT_EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
+    logging.info(
+        "Loading embedding model %s on CPU", DEFAULT_EMBEDDING_MODEL
     )
+    encoder = HuggingFaceEncoder(DEFAULT_EMBEDDING_MODEL, device="cpu")
 
-    vector_store = Chroma(
-        persist_directory=str(CHROMA_DB_DIR),
-        collection_name=collection_name,
-        embedding_function=embeddings,
-    )
+    logging.info("Encoding %s chunks", len(chunk_texts))
+    embeddings_array = encoder.encode(chunk_texts, batch_size=batch_size)
+
+    client = PersistentClient(path=str(CHROMA_DB_DIR))
+    logging.info("Preparing Chroma collection '%s'", collection_name)
+    try:
+        client.delete_collection(collection_name)
+    except Exception:
+        pass
+    collection = client.get_or_create_collection(name=collection_name)
 
     logging.info(
         "Adding %s chunks to Chroma in batches of %s", len(chunk_texts), batch_size
@@ -158,11 +163,19 @@ def build_vector_store(
         unit="чанк",
     ):
         end = start + batch_size
-        vector_store.add_texts(
-            texts=chunk_texts[start:end], metadatas=chunk_metadata[start:end]
+        batch_texts = chunk_texts[start:end]
+        batch_metadata = chunk_metadata[start:end]
+        batch_ids = [
+            str(meta.get("chunk_id", idx))
+            for idx, meta in enumerate(batch_metadata, start=start)
+        ]
+        collection.add(
+            ids=batch_ids,
+            documents=batch_texts,
+            metadatas=batch_metadata,
+            embeddings=embeddings_array[start:end].tolist(),
         )
 
-    vector_store.persist()
     logging.info("Index persisted to %s", CHROMA_DB_DIR)
 
 
