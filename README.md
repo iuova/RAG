@@ -38,11 +38,11 @@ pip install -r requirements.txt
 
 **Готовое решение:**
 ```bash
-# Интеллектуальный RAG с генерацией ответов
-python rag_query_final.py --question "ваш вопрос"
+# Интеллектуальный RAG с генерацией ответов (автоматически выберет GPU при наличии)
+python rag_query_final.py --question "ваш вопрос" --device auto
 
 # Интерактивный режим
-python rag_query_final.py
+python rag_query_final.py --device cpu
 ```
 
 **Альтернативы:**
@@ -72,9 +72,10 @@ python scripts/install_llama_cpp.py
 
 3. **Построение индекса**
    ```bash
-   python rag_index.py --source examples/example_documents.jsonl --collection demo
+   python rag_index.py examples/example_documents.jsonl --collection demo --device auto
    ```
-   Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`.
+   Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`. Параметр `--device` позволяет
+   выбрать устройство для расчёта эмбеддингов (`cpu`, `cuda` или `auto`).
 
 4. **Запрос с генерацией ответа**
    - **Для llama.cpp**: Установите llama-cpp-python и подготовьте GGUF-модель (см. `docs/llama_cpp_installation_guide.md`)
@@ -87,6 +88,11 @@ python scripts/install_llama_cpp.py
    - Для CPU-билда без llama.cpp используйте `rag_query_transformers.py`:
      ```bash
      python rag_query_transformers.py --collection demo --question "Что содержит пример?"
+
+   - Для генерации ответов без llama.cpp и с использованием локальных Hugging Face моделей:
+     ```bash
+     python rag_query_with_llm.py --collection demo --question "Что содержит пример?" --device auto
+     ```
      ```
 
 5. **Поиск без генерации**

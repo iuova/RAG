@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 from pathlib import Path
 from typing import List
 
 from chromadb import PersistentClient
-from embedding_utils import HuggingFaceEncoder
+from embedding_utils import get_encoder
 
 from config import (
     CHROMA_DB_DIR,
     DEFAULT_COLLECTION_NAME,
+    DEFAULT_DEVICE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     LOG_DIR,
@@ -19,122 +21,98 @@ from config import (
 )
 
 
-def generate_intelligent_answer(question: str, contexts: List[str]) -> str:
-    """Генерирует интеллектуальный ответ на основе найденных документов."""
-    
-    question_lower = question.lower()
-    
-    # Анализируем тип вопроса
-    if any(word in question_lower for word in ["что такое", "что это", "определение"]):
-        question_type = "определение"
-    elif any(word in question_lower for word in ["как", "каким образом", "способ"]):
-        question_type = "процедура"
-    elif any(word in question_lower for word in ["код", "номер", "шифр", "какой код"]):
-        question_type = "код"
-    elif any(word in question_lower for word in ["описание", "детали", "подробности"]):
-        question_type = "описание"
-    elif any(word in question_lower for word in ["где", "место", "расположение"]):
-        question_type = "место"
-    else:
-        question_type = "общий"
-    
-    # Извлекаем информацию из контекстов
-    codes = []
-    points = []
-    descriptions = []
-    
-    for context in contexts:
-        if "Код работы:" in context:
-            code_part = context.split("Код работы:")[1].split("|")[0].strip()
-            codes.append(code_part)
-        
-        if "Пункт:" in context:
-            point_part = context.split("Пункт:")[1].split("|")[0].strip()
-            points.append(point_part)
-        
-        if "Описание:" in context:
-            desc_part = context.split("Описание:")[1].strip()
-            descriptions.append(desc_part)
-    
-    # Формируем ответ в зависимости от типа вопроса
-    answer_parts = []
-    
-    if question_type == "код":
-        if codes:
-            answer_parts.append(f"Коды работ по вашему запросу:")
-            for code in codes:
-                answer_parts.append(f"• {code}")
-        else:
-            answer_parts.append("Коды работ не найдены в найденных документах.")
-    
-    elif question_type == "процедура":
-        if points:
-            answer_parts.append("Процедуры выполнения работ:")
-            for point in points:
-                answer_parts.append(f"• {point}")
-        if descriptions:
-            answer_parts.append("\nДетальное описание:")
-            for desc in descriptions:
-                answer_parts.append(f"• {desc}")
-    
-    elif question_type == "описание":
-        if descriptions:
-            answer_parts.append("Описание работ:")
-            for desc in descriptions:
-                answer_parts.append(f"• {desc}")
-        if points:
-            answer_parts.append("\nПункты ремонтной ведомости:")
-            for point in points:
-                answer_parts.append(f"• {point}")
-    
-    elif question_type == "определение":
-        if descriptions:
-            answer_parts.append("Определение:")
-            answer_parts.append(descriptions[0])  # Берем первое описание
-        if codes:
-            answer_parts.append(f"\nСвязанные коды работ: {', '.join(codes)}")
-    
-    else:  # общий
-        if codes:
-            answer_parts.append("Найденные коды работ:")
-            for code in codes:
-                answer_parts.append(f"• {code}")
-        
-        if points:
-            answer_parts.append("\nПункты ремонтной ведомости:")
-            for point in points:
-                answer_parts.append(f"• {point}")
-        
-        if descriptions:
-            answer_parts.append("\nОписания:")
-            for desc in descriptions:
-                answer_parts.append(f"• {desc}")
-    
-    # Формируем итоговый ответ
-    if answer_parts:
-        answer = "\n".join(answer_parts)
-    else:
-        answer = "К сожалению, не удалось найти релевантную информацию для ответа на ваш вопрос."
-    
-    return answer
+def _clean_snippet(text: str) -> str:
+    """Return a short, human readable snippet from a chunk."""
+
+    normalised = re.sub(r"\s+", " ", text.strip())
+    if not normalised:
+        return ""
+    if len(normalised) <= 280:
+        return normalised
+    return normalised[:277].rstrip() + "..."
 
 
-def run_final_rag(
-    collection, encoder: HuggingFaceEncoder, question: str, top_k: int
-) -> None:
+def _format_source(metadata: dict | None) -> str:
+    """Build a concise source label from metadata."""
+
+    if not metadata:
+        return "Неизвестный источник"
+    title = metadata.get("title")
+    document_id = metadata.get("document_id")
+    source = metadata.get("source")
+    if title:
+        return title
+    if document_id and source:
+        return f"{source} (ID {document_id})"
+    if source:
+        return source
+    if document_id:
+        return f"Документ {document_id}"
+    return "Неизвестный источник"
+
+
+def generate_intelligent_answer(
+    question: str, contexts: List[str], metadatas: List[dict]
+) -> str:
+    """Собирает осмысленный ответ на основе найденных фрагментов."""
+
+    if not contexts:
+        return (
+            "К сожалению, не удалось найти релевантную информацию для ответа на ваш вопрос."
+        )
+
+    parts: List[str] = []
+    unique_snippets = set()
+
+    for text, metadata in zip(contexts, metadatas):
+        snippet = _clean_snippet(text)
+        if not snippet or snippet in unique_snippets:
+            continue
+        unique_snippets.add(snippet)
+        source_label = _format_source(metadata)
+        parts.append(f"• {snippet} \n  Источник: {source_label}")
+
+    if not parts:
+        return (
+            "Контексты найдены, но их не удалось преобразовать в ответ. Попробуйте уточнить вопрос."
+        )
+
+    question_label = question.strip()
+    if question_label:
+        intro = (
+            f"По запросу «{question_label}» найдены наиболее релевантные фрагменты:"  # noqa: E501
+        )
+    else:
+        intro = (
+            "На основании найденных документов приведены наиболее релевантные фрагменты:"  # noqa: E501
+        )
+    return "\n".join([intro, *parts])
+
+
+def run_final_rag(collection, encoder, question: str, top_k: int) -> None:
     """Выполняет финальный RAG запрос."""
     
     print(f"Ищем информацию по запросу: '{question}'")
     
     # Получаем embeddings для запроса
-    query_embedding = encoder.encode_one(question).reshape(1, -1).tolist()
-    
+    try:
+        query_embedding = encoder.encode_one(question).reshape(1, -1).tolist()
+    except Exception as exc:
+        logging.exception("Не удалось создать embedding для запроса")
+        print(f"Ошибка при обработке запроса: {exc}")
+        return
+
     # Ищем релевантные документы
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
+    try:
+        results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as exc:
+        logging.exception("Ошибка при выполнении запроса к Chroma")
+        print(f"Не удалось выполнить поиск по коллекции: {exc}")
+        return
     
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
@@ -148,7 +126,7 @@ def run_final_rag(
     
     # Генерируем ответ
     print(f"\nГенерируем ответ...")
-    answer = generate_intelligent_answer(question, documents)
+    answer = generate_intelligent_answer(question, documents, metadatas)
     
     print(f"\nОтвет:")
     print("=" * 50)
@@ -169,6 +147,11 @@ def main():
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="Количество документов")
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME, help="Коллекция")
     parser.add_argument("--question", help="Вопрос")
+    parser.add_argument(
+        "--device",
+        default=DEFAULT_DEVICE,
+        help="Устройство для расчёта эмбеддингов (cpu, cuda, auto)",
+    )
     args = parser.parse_args()
 
     # Настройка логирования
@@ -190,15 +173,23 @@ def main():
 
     # Загружаем embeddings
     print("Загружаем модель embeddings...")
-    encoder = HuggingFaceEncoder(DEFAULT_EMBEDDING_MODEL, device="cpu")
+    try:
+        encoder = get_encoder(DEFAULT_EMBEDDING_MODEL, device=args.device)
+    except Exception as exc:
+        logging.exception("Не удалось инициализировать модель эмбеддингов")
+        print(f"Ошибка загрузки модели эмбеддингов: {exc}")
+        return
 
     # Подключаемся к базе
     print("Подключаемся к базе данных...")
     client = PersistentClient(path=str(CHROMA_DB_DIR))
     try:
         collection = client.get_collection(args.collection)
-    except Exception:
-        print(f"Коллекция '{args.collection}' не найдена.")
+    except Exception as exc:
+        logging.error("Collection retrieval failed: %s", exc)
+        print(
+            f"Коллекция '{args.collection}' не найдена. Запустите индексацию или проверьте имя коллекции."
+        )
         return
 
     print("Система готова к работе!")
