@@ -13,14 +13,17 @@ LOG_DIR: Path = BASE_DIR / "logs"
 EXAMPLES_DIR: Path = BASE_DIR / "examples"
 
 # Default resources --------------------------------------------------------
-DEFAULT_JSONL: Path = DATA_DIR / "data.jsonl"
+DEFAULT_JSONL: Path = DATA_DIR / "data_for_RAG.json"
 DEFAULT_COLLECTION_NAME: str = "docs"
 DEFAULT_EMBEDDING_MODEL: str = os.environ.get(
-    "RAG_EMBEDDING_MODEL", str(MODELS_DIR / "BAAI-bge-small-en-v1.5" / "snapshots" / "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
+    "RAG_EMBEDDING_MODEL",
+    "BAAI/bge-small-en-v1.5",
 )
 DEFAULT_MODEL_FILENAME: str = os.environ.get(
-    "RAG_LLM_FILENAME", "qwen2.5-7b-instruct-q4_k_m.gguf"
+    "RAG_LLM_FILENAME",
+    "Qwen/Qwen2.5-7B-Instruct",
 )
+DEFAULT_DEVICE: str = os.environ.get("RAG_DEVICE", "auto")
 
 # Runtime tuning -----------------------------------------------------------
 DEFAULT_CHUNK_SIZE: int = int(os.environ.get("RAG_CHUNK_SIZE", 1000))
@@ -50,6 +53,7 @@ __all__ = [
     "DEFAULT_COLLECTION_NAME",
     "DEFAULT_EMBEDDING_MODEL",
     "DEFAULT_MODEL_FILENAME",
+    "DEFAULT_DEVICE",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_CHUNK_OVERLAP",
     "DEFAULT_BATCH_SIZE",

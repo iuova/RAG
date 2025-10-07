@@ -7,11 +7,11 @@
 ```
 RAG/
 ├── chroma_db/                # Папка для сохранения векторного индекса (создается автоматически)
-├── examples/                 # Примеры входных JSONL-документов
+├── examples/                 # Примеры входных JSON/JSONL-документов
 ├── llama.cpp/                # Инструкции и скрипты для работы с локальными GGUF-моделями
 ├── scripts/                  # Служебные сценарии (тестирование модели, подготовка окружения)
 ├── config.py                 # Конфигурация путей и параметров по умолчанию
-├── rag_index.py              # Индексация JSONL-файлов в Chroma
+├── rag_index.py              # Индексация JSON/JSONL-файлов в Chroma с проверкой дубликатов
 ├── rag_query.py              # CLI для генерации ответов с llama.cpp
 ├── rag_query_transformers.py # CLI для генерации ответов через transformers
 ├── rag_query_simple.py       # Упрощенный поиск без генерации
@@ -38,11 +38,11 @@ pip install -r requirements.txt
 
 **Готовое решение:**
 ```bash
-# Интеллектуальный RAG с генерацией ответов
-python rag_query_final.py --question "ваш вопрос"
+# Интеллектуальный RAG с генерацией ответов (автоматически выберет GPU при наличии)
+python rag_query_final.py --question "ваш вопрос" --device auto
 
 # Интерактивный режим
-python rag_query_final.py
+python rag_query_final.py --device cpu
 ```
 
 **Альтернативы:**
@@ -64,17 +64,24 @@ python scripts/install_llama_cpp.py
 ## Быстрый старт
 
 2. **Подготовка данных**
-   - Сформируйте JSONL-файл с документами вида:
-     ```json
-     {"id": "doc-1", "text": "Текст документа", "metadata": {"source": "пример"}}
-     ```
-   - Пример минимального набора лежит в `examples/example_documents.jsonl`.
+   - Основной рабочий файл — `data/data_for_RAG.json`. Он может содержать список объектов
+     (в формате JSON) с полями `id`, `text`/`content` или другими текстовыми полями.
+   - Допускаются и JSONL-файлы, а также простые текстовые (`.txt`, `.md`). Индексатор
+     автоматически возьмёт поле с текстом и добавит остальные значения в метаданные.
+   - При повторной индексации дубликаты записей не создаются: чанки с одинаковыми
+     идентификаторами переиспользуются.
+   - Индексатор читает большие JSON-файлы потоково (через `ijson`), поэтому можно
+     безопасно работать с наборами данных размером 500 МБ и более без лишнего
+     потребления памяти.
 
-3. **Построение индекса**
+3. **Построение (или обновление) индекса**
    ```bash
-   python rag_index.py --source examples/example_documents.jsonl --collection demo
+   python rag_index.py data/data_for_RAG.json --collection demo --device auto
    ```
-   Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`.
+   Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`. Если файл обновился,
+   индексация добавит только новые чанки или переобновит существующие.
+   Параметр `--device` позволяет выбрать устройство для расчёта эмбеддингов
+   (`cpu`, `cuda` или `auto`).
 
 4. **Запрос с генерацией ответа**
    - **Для llama.cpp**: Установите llama-cpp-python и подготовьте GGUF-модель (см. `docs/llama_cpp_installation_guide.md`)
@@ -87,6 +94,11 @@ python scripts/install_llama_cpp.py
    - Для CPU-билда без llama.cpp используйте `rag_query_transformers.py`:
      ```bash
      python rag_query_transformers.py --collection demo --question "Что содержит пример?"
+
+   - Для генерации ответов без llama.cpp и с использованием локальных Hugging Face моделей:
+     ```bash
+     python rag_query_with_llm.py --collection demo --question "Что содержит пример?" --device auto
+     ```
      ```
 
 5. **Поиск без генерации**
