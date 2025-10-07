@@ -1,20 +1,35 @@
 """Utility helpers for loading and using embedding models."""
 from __future__ import annotations
 
-from typing import Sequence
+from functools import lru_cache
+import logging
+from typing import Iterable, Sequence
 
 import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 
 
+def _normalise_device(device: str | None = None) -> str:
+    """Resolve a device string and provide helpful fallbacks."""
+
+    requested = (device or "auto").lower()
+    if requested in {"auto", "default"}:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested == "cuda" and not torch.cuda.is_available():
+        logging.warning("CUDA requested but not available. Falling back to CPU.")
+        return "cpu"
+    return requested
+
+
 class HuggingFaceEncoder:
     """Thin wrapper around Hugging Face transformer models for embeddings."""
 
     def __init__(self, model_name: str, device: str = "cpu", max_length: int = 512) -> None:
+        resolved_device = _normalise_device(device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name)
-        self.device = torch.device(device)
+        self.device = torch.device(resolved_device)
         self.max_length = max_length
         self.model.to(self.device)
         self.model.eval()
@@ -53,3 +68,23 @@ class HuggingFaceEncoder:
         """Encode a single string and return a 1D numpy array."""
 
         return self.encode([text], batch_size=1)[0]
+
+
+@lru_cache(maxsize=4)
+def get_encoder(model_name: str, device: str = "cpu", max_length: int = 512) -> HuggingFaceEncoder:
+    """Return a cached encoder instance to avoid repeated model loads."""
+
+    return HuggingFaceEncoder(model_name=model_name, device=device, max_length=max_length)
+
+
+def batch_iterable(items: Iterable[tuple[str, dict]], batch_size: int) -> Iterable[list[tuple[str, dict]]]:
+    """Utility generator that groups chunk streams into batches."""
+
+    batch: list[tuple[str, dict]] = []
+    for item in items:
+        batch.append(item)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch

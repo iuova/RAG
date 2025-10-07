@@ -8,13 +8,14 @@ from typing import List
 import warnings
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from chromadb import PersistentClient
-from embedding_utils import HuggingFaceEncoder
+from embedding_utils import get_encoder
 
 from config import (
     CHROMA_DB_DIR,
     DEFAULT_COLLECTION_NAME,
+    DEFAULT_DEVICE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     LOG_DIR,
@@ -22,6 +23,18 @@ from config import (
 )
 
 warnings.filterwarnings('ignore')
+
+
+def _resolve_device(device: str) -> str:
+    """Normalize device strings with auto-detection."""
+
+    lowered = device.lower()
+    if lowered == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if lowered == "cuda" and not torch.cuda.is_available():
+        logging.warning("CUDA запрошена, но недоступна. Используем CPU.")
+        return "cpu"
+    return lowered
 
 
 def format_prompt_for_llm(question: str, contexts: List[str]) -> str:
@@ -86,22 +99,39 @@ def generate_answer_with_llm(
 
 
 def run_llm_rag_query(
-    model, tokenizer, collection, encoder: HuggingFaceEncoder, 
-    question: str, top_k: int, device: str
+    model,
+    tokenizer,
+    collection,
+    encoder,
+    question: str,
+    top_k: int,
+    device: str,
 ) -> None:
     """Выполняет RAG запрос с LLM генерацией."""
-    
+
     print(f"Ищем релевантные документы для: '{question}'")
-    
+
+    runtime_device = _resolve_device(device)
+
     # Получаем embeddings для запроса
-    query_embedding = encoder.encode_one(question).reshape(1, -1).tolist()
-    
+    try:
+        query_embedding = encoder.encode_one(question).reshape(1, -1).tolist()
+    except Exception as exc:
+        logging.exception("Не удалось создать embedding для запроса")
+        print(f"Ошибка при обработке запроса: {exc}")
+        return
+
     # Ищем релевантные документы
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
+    try:
+        results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as exc:
+        logging.exception("Ошибка при выполнении запроса к Chroma")
+        print(f"Не удалось выполнить поиск по коллекции: {exc}")
+        return
     
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
@@ -123,7 +153,9 @@ def run_llm_rag_query(
     # Генерируем ответ с помощью LLM
     print(f"\nГенерируем ответ с помощью LLM...")
     try:
-        answer = generate_answer_with_llm(model, tokenizer, question, documents, device)
+        answer = generate_answer_with_llm(
+            model, tokenizer, question, documents, runtime_device
+        )
         
         print(f"\n=== Ответ LLM ===")
         try:
@@ -149,29 +181,31 @@ def load_llm_model(model_name: str, device: str):
     """Загружает LLM модель."""
     print(f"Загружаем LLM модель: {model_name}")
     print("Загружаем локальную модель (может занять время на инициализацию)...")
-    
+
+    resolved_device = _resolve_device(device)
+
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            device_map="auto" if device == "cuda" else None,
+            torch_dtype=torch.float16 if resolved_device == "cuda" else torch.float32,
+            device_map="auto" if resolved_device == "cuda" else None,
             trust_remote_code=True,
-            low_cpu_mem_usage=True
+            low_cpu_mem_usage=True,
         )
-        
-        if device == "cpu":
-            model = model.to(device)
-        
+
+        if resolved_device == "cpu":
+            model = model.to(resolved_device)
+
         model.eval()
-        
+
         # Устанавливаем pad_token если его нет
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        
+
         print("Модель успешно загружена!")
         return model, tokenizer
-        
+
     except Exception as e:
         print(f"Ошибка загрузки модели: {e}")
         return None, None
@@ -183,13 +217,17 @@ def main():
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="Количество документов")
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME, help="Коллекция")
     parser.add_argument(
-        "--model", 
-        # default="Qwen/Qwen2.5-7B-Instruct",
-        default=r".\models\Qwen2.5-7B-Instruct",
-        help="LLM модель (по умолчанию: Qwen2.5-7B-Instruct для русского языка)"
+        "--model",
+        default="Qwen/Qwen2.5-7B-Instruct",
+        help="LLM модель (по умолчанию: Qwen2.5-7B-Instruct для русского языка)",
     )
     parser.add_argument("--question", help="Вопрос")
-    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Устройство")
+    parser.add_argument(
+        "--device",
+        default=DEFAULT_DEVICE,
+        choices=["cpu", "cuda", "auto"],
+        help="Устройство для генерации и эмбеддингов",
+    )
     args = parser.parse_args()
 
     # Настройка логирования
@@ -210,20 +248,30 @@ def main():
         return
 
     # Загружаем embeddings
+    runtime_device = _resolve_device(args.device)
+
     print("Загружаем модель embeddings...")
-    encoder = HuggingFaceEncoder(DEFAULT_EMBEDDING_MODEL, device="cpu")
+    try:
+        encoder = get_encoder(DEFAULT_EMBEDDING_MODEL, device=runtime_device)
+    except Exception as exc:
+        logging.exception("Не удалось инициализировать модель эмбеддингов")
+        print(f"Ошибка загрузки модели эмбеддингов: {exc}")
+        return
 
     # Подключаемся к базе
     print("Подключаемся к базе данных...")
     client = PersistentClient(path=str(CHROMA_DB_DIR))
     try:
         collection = client.get_collection(args.collection)
-    except Exception:
-        print(f"Коллекция '{args.collection}' не найдена.")
+    except Exception as exc:
+        logging.error("Collection retrieval failed: %s", exc)
+        print(
+            f"Коллекция '{args.collection}' не найдена. Запустите индексацию или проверьте имя коллекции."
+        )
         return
 
     # Загружаем LLM
-    model, tokenizer = load_llm_model(args.model, args.device)
+    model, tokenizer = load_llm_model(args.model, runtime_device)
     if model is None or tokenizer is None:
         print("Не удалось загрузить LLM модель.")
         return
@@ -232,7 +280,15 @@ def main():
     
     # Обрабатываем вопрос
     if args.question:
-        run_llm_rag_query(model, tokenizer, collection, encoder, args.question, args.top_k, args.device)
+        run_llm_rag_query(
+            model,
+            tokenizer,
+            collection,
+            encoder,
+            args.question,
+            args.top_k,
+            runtime_device,
+        )
         return
     
     # Интерактивный режим
@@ -251,7 +307,15 @@ def main():
             if not question:
                 continue
                 
-            run_llm_rag_query(model, tokenizer, collection, encoder, question, args.top_k, args.device)
+            run_llm_rag_query(
+                model,
+                tokenizer,
+                collection,
+                encoder,
+                question,
+                args.top_k,
+                runtime_device,
+            )
             
         except KeyboardInterrupt:
             print("\nДо свидания!")

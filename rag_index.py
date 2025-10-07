@@ -7,11 +7,11 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, Iterator, List, Sequence
 
 from tqdm import tqdm
 from chromadb import PersistentClient
-from embedding_utils import HuggingFaceEncoder
+from embedding_utils import batch_iterable, get_encoder
 
 from config import (
     CHROMA_DB_DIR,
@@ -19,6 +19,7 @@ from config import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_COLLECTION_NAME,
+    DEFAULT_DEVICE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_JSONL,
     LOG_DIR,
@@ -145,11 +146,8 @@ def split_text(
     return [c for c in chunks if c]
 
 
-def chunk_documents(documents: Sequence[DocumentRecord]) -> tuple[List[str], List[dict]]:
-    """Split documents into chunks while preserving metadata."""
-
-    chunk_texts: List[str] = []
-    chunk_metadata: List[dict] = []
+def iter_document_chunks(documents: Sequence[DocumentRecord]) -> Iterator[tuple[str, dict]]:
+    """Yield chunks of all documents one by one to avoid large buffers."""
 
     for doc_index, document in enumerate(
         tqdm(documents, desc="Разбивка на чанки", unit="док")
@@ -161,68 +159,71 @@ def chunk_documents(documents: Sequence[DocumentRecord]) -> tuple[List[str], Lis
         )
         for chunk_index, chunk in enumerate(splits):
             metadata = dict(document.metadata)
+            chunk_id_base = metadata.get(
+                "document_id", metadata.get("source", str(doc_index))
+            )
             metadata.update(
                 {
                     "chunk_index": chunk_index,
-                    "chunk_id": f"{metadata.get('document_id', metadata.get('source', doc_index))}:{chunk_index}",
+                    "chunk_id": f"{chunk_id_base}:{chunk_index}",
                 }
             )
-            chunk_texts.append(chunk)
-            chunk_metadata.append(metadata)
-
-    return chunk_texts, chunk_metadata
+            yield chunk, metadata
 
 
 def build_vector_store(
-    documents: Sequence[DocumentRecord], collection_name: str, batch_size: int
+    documents: Sequence[DocumentRecord],
+    collection_name: str,
+    batch_size: int,
+    device: str,
+    reset: bool,
 ) -> None:
-    """Persist documents inside a Chroma collection."""
+    """Persist documents inside a Chroma collection with streaming batches."""
 
     if not documents:
         raise ValueError("No documents were loaded for indexing.")
 
-    chunk_texts, chunk_metadata = chunk_documents(documents)
-    logging.info("Prepared %s chunks", len(chunk_texts))
-
     logging.info(
-        "Loading embedding model %s on CPU", DEFAULT_EMBEDDING_MODEL
+        "Loading embedding model %s on %s", DEFAULT_EMBEDDING_MODEL, device
     )
-    encoder = HuggingFaceEncoder(DEFAULT_EMBEDDING_MODEL, device="cpu")
-
-    logging.info("Encoding %s chunks", len(chunk_texts))
-    embeddings_array = encoder.encode(chunk_texts, batch_size=batch_size)
+    encoder = get_encoder(DEFAULT_EMBEDDING_MODEL, device=device)
 
     client = PersistentClient(path=str(CHROMA_DB_DIR))
     logging.info("Preparing Chroma collection '%s'", collection_name)
-    try:
-        client.delete_collection(collection_name)
-    except Exception:
-        pass
+    if reset:
+        try:
+            client.delete_collection(collection_name)
+            logging.info("Existing collection '%s' removed", collection_name)
+        except Exception:
+            logging.info("Collection '%s' did not exist before reset", collection_name)
     collection = client.get_or_create_collection(name=collection_name)
 
-    logging.info(
-        "Adding %s chunks to Chroma in batches of %s", len(chunk_texts), batch_size
-    )
-    for start in tqdm(
-        range(0, len(chunk_texts), batch_size),
+    chunk_stream = iter_document_chunks(documents)
+    total_chunks = 0
+    for batch in tqdm(
+        batch_iterable(chunk_stream, batch_size),
         desc="Индексация",
         unit="чанк",
     ):
-        end = start + batch_size
-        batch_texts = chunk_texts[start:end]
-        batch_metadata = chunk_metadata[start:end]
+        batch_texts = [item[0] for item in batch]
+        batch_metadata = [item[1] for item in batch]
         batch_ids = [
-            str(meta.get("chunk_id", idx))
-            for idx, meta in enumerate(batch_metadata, start=start)
+            str(meta.get("chunk_id", f"chunk-{total_chunks + idx}"))
+            for idx, meta in enumerate(batch_metadata)
         ]
+        embeddings = encoder.encode(batch_texts, batch_size=len(batch_texts))
         collection.add(
             ids=batch_ids,
             documents=batch_texts,
             metadatas=batch_metadata,
-            embeddings=embeddings_array[start:end].tolist(),
+            embeddings=embeddings.tolist(),
         )
+        total_chunks += len(batch_texts)
 
-    logging.info("Index persisted to %s", CHROMA_DB_DIR)
+    if total_chunks == 0:
+        logging.warning("No chunks were generated from the provided documents.")
+    else:
+        logging.info("Persisted %s chunks to %s", total_chunks, CHROMA_DB_DIR)
 
 
 def parse_args() -> argparse.Namespace:
@@ -249,6 +250,11 @@ def parse_args() -> argparse.Namespace:
         "--reset",
         action="store_true",
         help="Удалить существующую коллекцию перед индексацией.",
+    )
+    parser.add_argument(
+        "--device",
+        default=DEFAULT_DEVICE,
+        help="Устройство для расчёта эмбеддингов (cpu, cuda, auto).",
     )
     return parser.parse_args()
 
@@ -278,7 +284,23 @@ def main() -> None:
     documents = iter_documents(args.inputs)
     logging.info("Loaded %s source documents", len(documents))
 
-    build_vector_store(documents, args.collection, args.batch_size)
+    try:
+        build_vector_store(
+            documents,
+            args.collection,
+            args.batch_size,
+            args.device,
+            args.reset,
+        )
+    except ValueError as exc:
+        logging.error("Indexing aborted: %s", exc)
+        print(f"Индексация остановлена: {exc}")
+        return
+    except Exception as exc:
+        logging.exception("Unexpected error during indexing")
+        print(f"Произошла ошибка при индексации: {exc}")
+        return
+
     print(f"Индексация завершена. База сохранена в: {CHROMA_DB_DIR}")
 
 
