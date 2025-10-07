@@ -16,7 +16,7 @@ EXAMPLES_DIR: Path = BASE_DIR / "examples"
 DEFAULT_JSONL: Path = DATA_DIR / "data.jsonl"
 DEFAULT_COLLECTION_NAME: str = "docs"
 DEFAULT_EMBEDDING_MODEL: str = os.environ.get(
-    "RAG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"
+    "RAG_EMBEDDING_MODEL", str(MODELS_DIR / "BAAI-bge-small-en-v1.5" / "snapshots" / "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
 )
 DEFAULT_MODEL_FILENAME: str = os.environ.get(
     "RAG_LLM_FILENAME", "qwen2.5-7b-instruct-q4_k_m.gguf"

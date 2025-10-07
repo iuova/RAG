@@ -75,7 +75,11 @@ def generate_answer_with_llm(
     # Извлекаем только ответ ассистента
     if "<|im_start|>assistant" in generated_text:
         answer = generated_text.split("<|im_start|>assistant")[-1].strip()
+        # Убираем возможные остатки тегов
+        if "<|im_end|>" in answer:
+            answer = answer.split("<|im_end|>")[0].strip()
     else:
+        # Если не нашли тег, берем все после промпта
         answer = generated_text[len(prompt):].strip()
     
     return answer
@@ -110,7 +114,7 @@ def run_llm_rag_query(
     print(f"Найдено {len(documents)} релевантных документов")
     
     # Показываем найденные документы
-    print("\n=== Найденные документы ===")
+    print("\nНайдены строки:")
     for i, (doc, metadata, distance) in enumerate(zip(documents, metadatas, distances), 1):
         source = metadata.get("source", "Неизвестно") if metadata else "Неизвестно"
         print(f"\n{i}. {source} (relevance={1-distance:.2f})")
@@ -122,7 +126,11 @@ def run_llm_rag_query(
         answer = generate_answer_with_llm(model, tokenizer, question, documents, device)
         
         print(f"\n=== Ответ LLM ===")
-        print(answer)
+        try:
+            print(answer)
+        except UnicodeEncodeError:
+            # Для Windows терминала с cp1251
+            print(answer.encode('cp1251', errors='ignore').decode('cp1251'))
         
     except Exception as e:
         print(f"Ошибка генерации: {e}")
@@ -140,7 +148,7 @@ def run_llm_rag_query(
 def load_llm_model(model_name: str, device: str):
     """Загружает LLM модель."""
     print(f"Загружаем LLM модель: {model_name}")
-    print("Это может занять несколько минут...")
+    print("Загружаем локальную модель (может занять время на инициализацию)...")
     
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
