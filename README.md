@@ -76,12 +76,10 @@ python scripts/install_llama_cpp.py
 
 3. **Построение (или обновление) индекса**
    ```bash
-   python rag_index.py data/data_for_RAG.json --collection demo --device auto
+   python rag_index.py examples/example_documents.jsonl --collection demo --device auto
    ```
-   Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`. Если файл обновился,
-   индексация добавит только новые чанки или переобновит существующие.
-   Параметр `--device` позволяет выбрать устройство для расчёта эмбеддингов
-   (`cpu`, `cuda` или `auto`).
+   Скрипт создаст/обновит коллекцию Chroma в `chroma_db/`. Параметр `--device` позволяет
+   выбрать устройство для расчёта эмбеддингов (`cpu`, `cuda` или `auto`).
 
 4. **Запрос с генерацией ответа**
    - **Для llama.cpp**: Установите llama-cpp-python и подготовьте GGUF-модель (см. `docs/llama_cpp_installation_guide.md`)

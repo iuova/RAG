@@ -9,7 +9,7 @@ import shutil
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
-from typing import Iterable, Iterator, List
+from typing import Iterable, Iterator, List, Sequence
 
 from tqdm import tqdm
 from chromadb import PersistentClient
@@ -310,9 +310,7 @@ def split_text(
     return [c for c in chunks if c]
 
 
-def iter_document_chunks(
-    documents: Iterable[DocumentRecord],
-) -> Iterator[tuple[str, dict]]:
+def iter_document_chunks(documents: Sequence[DocumentRecord]) -> Iterator[tuple[str, dict]]:
     """Yield chunks of all documents one by one to avoid large buffers."""
 
     for doc_index, document in enumerate(
@@ -338,13 +336,16 @@ def iter_document_chunks(
 
 
 def build_vector_store(
-    documents: Iterable[DocumentRecord],
+    documents: Sequence[DocumentRecord],
     collection_name: str,
     batch_size: int,
     device: str,
     reset: bool,
 ) -> None:
     """Persist documents inside a Chroma collection with streaming batches."""
+
+    if not documents:
+        raise ValueError("No documents were loaded for indexing.")
 
     logging.info(
         "Loading embedding model %s on %s", DEFAULT_EMBEDDING_MODEL, device
@@ -361,19 +362,8 @@ def build_vector_store(
             logging.info("Collection '%s' did not exist before reset", collection_name)
     collection = client.get_or_create_collection(name=collection_name)
 
-    documents_iter = iter(documents)
-    documents_processed = 0
-
-    def counted_documents() -> Iterator[DocumentRecord]:
-        nonlocal documents_processed
-        for document in documents_iter:
-            documents_processed += 1
-            yield document
-
-    chunk_stream = iter_document_chunks(counted_documents())
+    chunk_stream = iter_document_chunks(documents)
     total_chunks = 0
-    skipped_duplicates = 0
-
     for batch in tqdm(
         batch_iterable(chunk_stream, batch_size),
         desc="Индексация",
@@ -386,60 +376,18 @@ def build_vector_store(
             for idx, meta in enumerate(batch_metadata)
         ]
         embeddings = encoder.encode(batch_texts, batch_size=len(batch_texts))
-        payload = {
-            "ids": batch_ids,
-            "documents": batch_texts,
-            "metadatas": batch_metadata,
-            "embeddings": embeddings.tolist(),
-        }
-
-        if hasattr(collection, "upsert"):
-            collection.upsert(**payload)
-            total_chunks += len(batch_texts)
-        else:
-            try:
-                existing = collection.get(ids=batch_ids)
-                existing_ids = set(existing.get("ids", [])) if existing else set()
-            except Exception:
-                logging.exception("Не удалось проверить наличие дубликатов в коллекции")
-                existing_ids = set()
-
-            filtered = [
-                (
-                    payload["ids"][idx],
-                    payload["documents"][idx],
-                    payload["metadatas"][idx],
-                    payload["embeddings"][idx],
-                )
-                for idx in range(len(batch_ids))
-                if payload["ids"][idx] not in existing_ids
-            ]
-
-            if not filtered:
-                skipped_duplicates += len(batch_ids)
-                continue
-
-            if existing_ids:
-                skipped_duplicates += len(existing_ids)
-
-            collection.add(
-                ids=[item[0] for item in filtered],
-                documents=[item[1] for item in filtered],
-                metadatas=[item[2] for item in filtered],
-                embeddings=[item[3] for item in filtered],
-            )
-            total_chunks += len(filtered)
-
-    if documents_processed == 0:
-        raise ValueError("No documents were loaded for indexing.")
+        collection.add(
+            ids=batch_ids,
+            documents=batch_texts,
+            metadatas=batch_metadata,
+            embeddings=embeddings.tolist(),
+        )
+        total_chunks += len(batch_texts)
 
     if total_chunks == 0:
         logging.warning("No chunks were generated from the provided documents.")
     else:
         logging.info("Persisted %s chunks to %s", total_chunks, CHROMA_DB_DIR)
-    logging.info("Обработано %s документов", documents_processed)
-    if skipped_duplicates:
-        logging.info("Пропущено %s чанков из-за дубликатов", skipped_duplicates)
 
 
 def parse_args() -> argparse.Namespace:
@@ -511,6 +459,23 @@ def main() -> None:
         "Начата потоковая загрузка документов. Первый источник: %s",
         first_document.metadata.get("source", first_document.metadata.get("source_path", "<unknown>")),
     )
+
+    try:
+        build_vector_store(
+            documents,
+            args.collection,
+            args.batch_size,
+            args.device,
+            args.reset,
+        )
+    except ValueError as exc:
+        logging.error("Indexing aborted: %s", exc)
+        print(f"Индексация остановлена: {exc}")
+        return
+    except Exception as exc:
+        logging.exception("Unexpected error during indexing")
+        print(f"Произошла ошибка при индексации: {exc}")
+        return
 
     try:
         build_vector_store(

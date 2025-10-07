@@ -5,7 +5,6 @@ numpy>=1.24.0
 torch>=2.0.0
 transformers>=4.36.0
 tqdm>=4.66.0
-ijson>=3.2.3
 
 # Дополнительные инструменты можно установить при необходимости:
 # pip install ".[dev]" или вручную (pytest, black, jupyter и т.п.)
