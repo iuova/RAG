@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import shutil
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence
 
@@ -26,6 +28,11 @@ from config import (
     ensure_directories,
 )
 
+try:
+    import ijson
+except ImportError:  # pragma: no cover - optional at runtime but required in prod
+    ijson = None
+
 
 @dataclass(frozen=True)
 class DocumentRecord:
@@ -35,10 +42,60 @@ class DocumentRecord:
     metadata: dict
 
 
-def load_jsonl_documents(path: Path) -> List[DocumentRecord]:
-    """Load text entries from a JSONL file."""
+def _derive_document_id(
+    payload: dict, fallback_prefix: str, index: int, text: str
+) -> str:
+    """Return a stable identifier for a document payload."""
 
-    documents: List[DocumentRecord] = []
+    preferred_keys = ("document_id", "id", "doc_id", "uuid", "code")
+    for key in preferred_keys:
+        value = payload.get(key)
+        if value:
+            return str(value)
+
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()  # noqa: S324
+    return f"{fallback_prefix}-{index}-{digest[:12]}"
+
+
+def _coerce_entries(obj: object) -> List[dict]:
+    """Extract a list of document-like dictionaries from arbitrary JSON."""
+
+    if isinstance(obj, list):
+        return [item for item in obj if isinstance(item, dict)]
+
+    if isinstance(obj, dict):
+        candidate_keys = ("data", "items", "records", "documents", "rows")
+        for key in candidate_keys:
+            value = obj.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [obj]
+
+    return []
+
+
+def _extract_text_field(payload: dict) -> str | None:
+    """Find the most likely text field inside a payload."""
+
+    text_keys = (
+        "text",
+        "content",
+        "body",
+        "answer",
+        "description",
+        "document",
+        "data",
+    )
+    for key in text_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def load_jsonl_documents(path: Path) -> Iterator[DocumentRecord]:
+    """Stream text entries from a JSONL file without buffering everything."""
+
     with path.open("r", encoding="utf-8") as file:
         for line_number, line in enumerate(file, start=1):
             if not line.strip():
@@ -53,46 +110,153 @@ def load_jsonl_documents(path: Path) -> List[DocumentRecord]:
             if not isinstance(text, str) or not text.strip():
                 continue
 
+            document_id = _derive_document_id(
+                obj, path.stem, line_number, text.strip()
+            )
             metadata = {
                 "source": path.name,
                 "source_path": str(path),
                 "line": line_number,
+                "document_id": document_id,
             }
-            if "id" in obj:
-                metadata["document_id"] = str(obj["id"])
             if "title" in obj and obj["title"]:
                 metadata["title"] = str(obj["title"])
 
-            documents.append(DocumentRecord(text=text.strip(), metadata=metadata))
-    return documents
+            yield DocumentRecord(text=text.strip(), metadata=metadata)
 
 
-def iter_documents(paths: Iterable[Path]) -> List[DocumentRecord]:
-    """Load documents from a list of files."""
+def _first_non_whitespace_character(path: Path) -> str | None:
+    """Return the first non-whitespace character of a file or ``None``."""
 
-    docs: List[DocumentRecord] = []
+    with path.open("r", encoding="utf-8") as file:
+        while True:
+            chunk = file.read(4096)
+            if not chunk:
+                return None
+            for char in chunk:
+                if not char.isspace():
+                    return char
+
+
+def _iter_json_payload(path: Path) -> Iterator[tuple[int, dict]]:
+    """Yield dictionary payloads from JSON files using streaming parsers."""
+
+    if ijson is None:
+        logging.warning(
+            "ijson не установлен. Файл %s будет прочитан целиком в память.", path
+        )
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logging.error("Не удалось прочитать JSON из %s: %s", path, exc)
+            return
+        for index, item in enumerate(_coerce_entries(payload), start=1):
+            if isinstance(item, dict):
+                yield index, item
+        return
+
+    first_char = _first_non_whitespace_character(path)
+    if first_char == "[":
+        candidate_streams = ["item"]
+    else:
+        candidate_streams = [
+            "data.item",
+            "items.item",
+            "records.item",
+            "documents.item",
+            "rows.item",
+            "item",
+        ]
+
+    for prefix in candidate_streams:
+        yielded_any = False
+        try:
+            with path.open("rb") as file:
+                for index, item in enumerate(ijson.items(file, prefix), start=1):
+                    if not isinstance(item, dict):
+                        continue
+                    yielded_any = True
+                    yield index, item
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logging.debug(
+                "Не удалось обработать %s с префиксом %s: %s", path, prefix, exc
+            )
+            continue
+        if yielded_any:
+            return
+
+    logging.debug(
+        "Не найден подходящий массив в %s, используется полное чтение файла", path
+    )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        logging.error("Не удалось прочитать JSON из %s: %s", path, exc)
+        return
+
+    if isinstance(payload, dict):
+        yield 1, payload
+    elif isinstance(payload, list):
+        for index, item in enumerate(payload, start=1):
+            if isinstance(item, dict):
+                yield index, item
+
+
+def load_json_documents(path: Path) -> Iterator[DocumentRecord]:
+    """Stream text entries from a generic JSON file using a streaming parser."""
+
+    yielded = False
+    for index, item in _iter_json_payload(path):
+        text = _extract_text_field(item)
+        if not text:
+            logging.debug(
+                "Запись %s из %s пропущена: отсутствует текстовое поле", index, path
+            )
+            continue
+
+        document_id = _derive_document_id(item, path.stem, index, text)
+        metadata = {
+            "source": path.name,
+            "source_path": str(path),
+            "document_id": document_id,
+        }
+        if "title" in item and item["title"]:
+            metadata["title"] = str(item["title"])
+
+        yielded = True
+        yield DocumentRecord(text=text, metadata=metadata)
+
+    if not yielded:
+        logging.warning(
+            "JSON файл %s не содержит подходящих записей для индексации", path
+        )
+
+
+def iter_documents(paths: Iterable[Path]) -> Iterator[DocumentRecord]:
+    """Yield documents from a list of files without accumulating everything."""
+
     for path in paths:
         if not path.exists():
             logging.warning("File %s not found, skipping", path)
             continue
-        if path.suffix.lower() == ".jsonl":
-            docs.extend(load_jsonl_documents(path))
-        elif path.suffix.lower() in {".txt", ".md"}:
+        suffix = path.suffix.lower()
+        if suffix == ".jsonl":
+            yield from load_jsonl_documents(path)
+        elif suffix == ".json":
+            yield from load_json_documents(path)
+        elif suffix in {".txt", ".md"}:
             text = path.read_text(encoding="utf-8").strip()
             if not text:
                 continue
-            docs.append(
-                DocumentRecord(
-                    text=text,
-                    metadata={
-                        "source": path.name,
-                        "source_path": str(path),
-                    },
-                )
+            yield DocumentRecord(
+                text=text,
+                metadata={
+                    "source": path.name,
+                    "source_path": str(path),
+                },
             )
         else:
             logging.warning("Unsupported file extension for %s, skipping", path)
-    return docs
 
 
 def split_text(
@@ -233,7 +397,7 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         type=Path,
         default=[DEFAULT_JSONL],
-        help="Files to ingest (JSONL or TXT). Defaults to data/data.jsonl.",
+        help="Files to ingest (JSON/JSONL/TXT). Defaults to data/data_for_RAG.json.",
     )
     parser.add_argument(
         "--collection",
@@ -281,8 +445,37 @@ def main() -> None:
         shutil.rmtree(CHROMA_DB_DIR)
         CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
 
-    documents = iter_documents(args.inputs)
-    logging.info("Loaded %s source documents", len(documents))
+    raw_documents = iter_documents(args.inputs)
+    raw_iterator = iter(raw_documents)
+    try:
+        first_document = next(raw_iterator)
+    except StopIteration:
+        logging.error("Нет документов для индексации по указанным путям")
+        print("Не найдено документов для индексации. Проверьте входные файлы.")
+        return
+
+    documents = chain([first_document], raw_iterator)
+    logging.info(
+        "Начата потоковая загрузка документов. Первый источник: %s",
+        first_document.metadata.get("source", first_document.metadata.get("source_path", "<unknown>")),
+    )
+
+    try:
+        build_vector_store(
+            documents,
+            args.collection,
+            args.batch_size,
+            args.device,
+            args.reset,
+        )
+    except ValueError as exc:
+        logging.error("Indexing aborted: %s", exc)
+        print(f"Индексация остановлена: {exc}")
+        return
+    except Exception as exc:
+        logging.exception("Unexpected error during indexing")
+        print(f"Произошла ошибка при индексации: {exc}")
+        return
 
     try:
         build_vector_store(
