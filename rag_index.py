@@ -190,12 +190,16 @@ def build_vector_store(
 
     client = PersistentClient(path=str(CHROMA_DB_DIR))
     logging.info("Preparing Chroma collection '%s'", collection_name)
+    
+    # Улучшенная логика reset: проверяем существование коллекции перед удалением
     if reset:
         try:
             client.delete_collection(collection_name)
             logging.info("Existing collection '%s' removed", collection_name)
-        except Exception:
-            logging.info("Collection '%s' did not exist before reset", collection_name)
+        except Exception as exc:
+            # Если коллекция не существует, это нормально
+            logging.info("Collection '%s' did not exist before reset: %s", collection_name, exc)
+    
     collection = client.get_or_create_collection(name=collection_name)
 
     chunk_stream = iter_document_chunks(documents)
@@ -211,7 +215,7 @@ def build_vector_store(
             str(meta.get("chunk_id", f"chunk-{total_chunks + idx}"))
             for idx, meta in enumerate(batch_metadata)
         ]
-        embeddings = encoder.encode(batch_texts, batch_size=len(batch_texts))
+        embeddings = encoder.encode(batch_texts, batch_size=32)  # Исправлено: используем фиксированный batch_size для encode
         collection.add(
             ids=batch_ids,
             documents=batch_texts,
@@ -276,13 +280,23 @@ def main() -> None:
     logging.info("Starting indexing run")
     logging.info("Input files: %s", ", ".join(str(p) for p in args.inputs))
 
-    if args.reset and CHROMA_DB_DIR.exists():
-        logging.info("Resetting Chroma directory %s", CHROMA_DB_DIR)
-        shutil.rmtree(CHROMA_DB_DIR)
-        CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
+    # Улучшенная логика reset: удаляем директорию только если reset=True
+    if args.reset:
+        if CHROMA_DB_DIR.exists():
+            logging.info("Resetting Chroma directory %s", CHROMA_DB_DIR)
+            shutil.rmtree(CHROMA_DB_DIR)
+            CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
+        else:
+            logging.info("Chroma directory %s does not exist, will be created", CHROMA_DB_DIR)
 
     documents = iter_documents(args.inputs)
     logging.info("Loaded %s source documents", len(documents))
+    
+    # Проверка: выводим предупреждение, если документов не найдено
+    if len(documents) == 0:
+        logging.warning("No documents were loaded from input files!")
+        print("ВНИМАНИЕ: Документы не загружены. Проверьте пути к файлам и формат данных.")
+        return
 
     try:
         build_vector_store(

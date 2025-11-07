@@ -14,9 +14,26 @@ REQUIRED_COLUMNS = ("Работа", "ПунктРемонтнойВедомос�
 
 
 def build_record(idx: int, row: pd.Series) -> dict:
-    title = str(row["ПунктРемонтнойВедомости"]).strip()
-    text_parts = [str(row[col]).strip() for col in REQUIRED_COLUMNS]
-    text = " ".join(part for part in text_parts if part)
+    """Создает запись в формате JSONL."""
+    # title берется из колонки "Работа"
+    title = str(row["Работа"]).strip()
+    
+    # Получаем значения из всех колонок
+    работа = str(row["Работа"]).strip()
+    пункт = str(row["ПунктРемонтнойВедомости"]).strip()
+    описание = str(row["Описание"]).strip()
+    
+    # Формируем text в нужном формате
+    text_parts = []
+    if работа:
+        text_parts.append(f"Код работы: {работа}")
+    if пункт:
+        text_parts.append(f"Пункт: {пункт}")
+    if описание:
+        text_parts.append(f"Описание: {описание}")
+    
+    text = " | ".join(text_parts)
+    
     return {"id": str(idx + 1), "title": title, "text": text}
 
 
