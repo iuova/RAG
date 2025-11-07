@@ -13,7 +13,7 @@ LOG_DIR: Path = BASE_DIR / "logs"
 EXAMPLES_DIR: Path = BASE_DIR / "examples"
 
 # Default resources --------------------------------------------------------
-DEFAULT_JSONL: Path = DATA_DIR / "data.jsonl"
+DEFAULT_JSONL: Path = DATA_DIR / "data_for_RAG.json"
 DEFAULT_COLLECTION_NAME: str = "docs"
 DEFAULT_EMBEDDING_MODEL: str = os.environ.get(
     "RAG_EMBEDDING_MODEL",
