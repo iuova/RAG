@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
 from pathlib import Path
 from typing import List
 
@@ -18,44 +17,35 @@ from config import (
     DEFAULT_TOP_K,
     LOG_DIR,
     ensure_directories,
+    validate_config,
 )
-
-
-def _clean_snippet(text: str) -> str:
-    """Return a short, human readable snippet from a chunk."""
-
-    normalised = re.sub(r"\s+", " ", text.strip())
-    if not normalised:
-        return ""
-    if len(normalised) <= 280:
-        return normalised
-    return normalised[:277].rstrip() + "..."
-
-
-def _format_source(metadata: dict | None) -> str:
-    """Build a concise source label from metadata."""
-
-    if not metadata:
-        return "Неизвестный источник"
-    title = metadata.get("title")
-    document_id = metadata.get("document_id")
-    source = metadata.get("source")
-    if title:
-        return title
-    if document_id and source:
-        return f"{source} (ID {document_id})"
-    if source:
-        return source
-    if document_id:
-        return f"Документ {document_id}"
-    return "Неизвестный источник"
+from error_handling import (
+    ChromaDBError,
+    EmbeddingError,
+    format_error_for_user,
+)
+from rag_core import (
+    clean_snippet,
+    create_query_embedding,
+    format_source,
+    print_search_results,
+    search_documents,
+)
 
 
 def generate_intelligent_answer(
     question: str, contexts: List[str], metadatas: List[dict]
 ) -> str:
-    """Собирает осмысленный ответ на основе найденных фрагментов."""
+    """Собирает осмысленный ответ на основе найденных фрагментов.
 
+    Args:
+        question: Текст вопроса
+        contexts: Найденные контексты
+        metadatas: Метаданные документов
+
+    Returns:
+        Сформированный ответ
+    """
     if not contexts:
         return (
             "К сожалению, не удалось найти релевантную информацию для ответа на ваш вопрос."
@@ -65,11 +55,11 @@ def generate_intelligent_answer(
     unique_snippets = set()
 
     for text, metadata in zip(contexts, metadatas):
-        snippet = _clean_snippet(text)
+        snippet = clean_snippet(text)
         if not snippet or snippet in unique_snippets:
             continue
         unique_snippets.add(snippet)
-        source_label = _format_source(metadata)
+        source_label = format_source(metadata)
         parts.append(f"• {snippet} \n  Источник: {source_label}")
 
     if not parts:
@@ -90,55 +80,47 @@ def generate_intelligent_answer(
 
 
 def run_final_rag(collection, encoder, question: str, top_k: int) -> None:
-    """Выполняет финальный RAG запрос."""
-    
+    """Выполняет финальный RAG запрос.
+
+    Args:
+        collection: Коллекция ChromaDB
+        encoder: Энкодер для создания embeddings
+        question: Текст вопроса
+        top_k: Количество документов для возврата
+    """
     print(f"Ищем информацию по запросу: '{question}'")
-    
+
     # Получаем embeddings для запроса
     try:
-        query_embedding = encoder.encode_one(question).reshape(1, -1).tolist()
-    except Exception as exc:
-        logging.exception("Не удалось создать embedding для запроса")
-        print(f"Ошибка при обработке запроса: {exc}")
+        query_embedding = create_query_embedding(encoder, question)
+    except EmbeddingError as exc:
+        print(format_error_for_user(exc))
         return
 
     # Ищем релевантные документы
     try:
-        results = collection.query(
-            query_embeddings=query_embedding,
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
+        documents, metadatas, distances = search_documents(
+            collection, query_embedding, top_k
         )
-    except Exception as exc:
-        logging.exception("Ошибка при выполнении запроса к Chroma")
-        print(f"Не удалось выполнить поиск по коллекции: {exc}")
+    except ChromaDBError as exc:
+        print(format_error_for_user(exc))
         return
-    
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-    
+
     if not documents:
         print("Документов по запросу не найдено.")
         return
-    
-    print(f"Найдено {len(documents)} релевантных документов")
-    
+
     # Генерируем ответ
     print(f"\nГенерируем ответ...")
     answer = generate_intelligent_answer(question, documents, metadatas)
-    
+
     print(f"\nОтвет:")
     print("=" * 50)
     print(answer)
     print("=" * 50)
-    
+
     # Показываем источники
-    print(f"\nИсточники ({len(documents)}):")
-    for i, (metadata, distance) in enumerate(zip(metadatas, distances), 1):
-        source = metadata.get("source", "Неизвестно") if metadata else "Неизвестно"
-        relevance = "высокая" if distance < 0.7 else "средняя" if distance < 0.9 else "низкая"
-        print(f"{i}. {source} (релевантность: {relevance}, distance={distance:.4f})")
+    print_search_results(documents, metadatas, distances)
 
 
 def main():
@@ -153,6 +135,13 @@ def main():
         help="Устройство для расчёта эмбеддингов (cpu, cuda, auto)",
     )
     args = parser.parse_args()
+
+    # Валидация конфигурации
+    try:
+        validate_config()
+    except Exception as exc:
+        print(f"Ошибка конфигурации: {exc}")
+        return
 
     # Настройка логирования
     ensure_directories()
@@ -193,12 +182,12 @@ def main():
         return
 
     print("Система готова к работе!")
-    
+
     # Обрабатываем вопрос
     if args.question:
         run_final_rag(collection, encoder, args.question, args.top_k)
         return
-    
+
     # Интерактивный режим
     print("\nИнтерактивный режим. Введите вопрос (или 'exit' для выхода):")
     print("Примеры вопросов:")
@@ -206,7 +195,7 @@ def main():
     print("• Как обеспечить электропитание?")
     print("• Код работы для установки трапа")
     print("• Описание пожарной безопасности")
-    
+
     while True:
         try:
             question = input("\n> ").strip()
@@ -215,14 +204,14 @@ def main():
                 break
             if not question:
                 continue
-                
+
             run_final_rag(collection, encoder, question, args.top_k)
-            
+
         except KeyboardInterrupt:
             print("\nДо свидания!")
             break
         except Exception as e:
-            print(f"Ошибка: {e}")
+            print(f"Ошибка: {format_error_for_user(e)}")
 
 
 if __name__ == "__main__":

@@ -444,6 +444,15 @@ def main() -> None:
     logging.info("Starting indexing run")
     logging.info("Input files: %s", ", ".join(str(p) for p in args.inputs))
 
+    # Валидация конфигурации
+    from config import validate_config
+    try:
+        validate_config()
+    except Exception as exc:
+        logging.error("Ошибка валидации конфигурации: %s", exc)
+        print(f"Ошибка конфигурации: {exc}")
+        return
+
     # Улучшенная логика reset: удаляем директорию только если reset=True
     if args.reset:
         if CHROMA_DB_DIR.exists():
@@ -453,7 +462,8 @@ def main() -> None:
         else:
             logging.info("Chroma directory %s does not exist, will be created", CHROMA_DB_DIR)
 
-    documents = iter_documents(args.inputs)
+    # Материализуем итератор для подсчета документов
+    documents = list(iter_documents(args.inputs))
     logging.info("Loaded %s source documents", len(documents))
 
     try:

@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from error_handling import ValidationError
+
 # Base paths ---------------------------------------------------------------
 BASE_DIR: Path = Path(__file__).resolve().parent
 DATA_DIR: Path = BASE_DIR / "data"
@@ -42,6 +44,61 @@ def ensure_directories() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
+def validate_config() -> None:
+    """Проверяет корректность конфигурации.
+
+    Raises:
+        ValidationError: При некорректных значениях конфигурации
+    """
+    if DEFAULT_CHUNK_SIZE <= 0:
+        raise ValidationError(
+            f"chunk_size должен быть положительным числом, получено: {DEFAULT_CHUNK_SIZE}"
+        )
+
+    if DEFAULT_CHUNK_OVERLAP < 0:
+        raise ValidationError(
+            f"chunk_overlap не может быть отрицательным, получено: {DEFAULT_CHUNK_OVERLAP}"
+        )
+
+    if DEFAULT_CHUNK_OVERLAP >= DEFAULT_CHUNK_SIZE:
+        raise ValidationError(
+            f"chunk_overlap ({DEFAULT_CHUNK_OVERLAP}) должен быть меньше "
+            f"chunk_size ({DEFAULT_CHUNK_SIZE})"
+        )
+
+    if DEFAULT_BATCH_SIZE <= 0:
+        raise ValidationError(
+            f"batch_size должен быть положительным числом, получено: {DEFAULT_BATCH_SIZE}"
+        )
+
+    if DEFAULT_TOP_K <= 0:
+        raise ValidationError(
+            f"top_k должен быть положительным числом, получено: {DEFAULT_TOP_K}"
+        )
+
+    if DEFAULT_TEMPERATURE < 0 or DEFAULT_TEMPERATURE > 2:
+        raise ValidationError(
+            f"temperature должен быть в диапазоне [0, 2], получено: {DEFAULT_TEMPERATURE}"
+        )
+
+    if DEFAULT_CONTEXT_LENGTH <= 0:
+        raise ValidationError(
+            f"context_length должен быть положительным числом, "
+            f"получено: {DEFAULT_CONTEXT_LENGTH}"
+        )
+
+    if DEFAULT_MAX_NEW_TOKENS <= 0:
+        raise ValidationError(
+            f"max_new_tokens должен быть положительным числом, "
+            f"получено: {DEFAULT_MAX_NEW_TOKENS}"
+        )
+
+    if DEFAULT_DEVICE not in ("cpu", "cuda", "auto"):
+        raise ValidationError(
+            f"device должен быть 'cpu', 'cuda' или 'auto', получено: {DEFAULT_DEVICE}"
+        )
+
+
 __all__ = [
     "BASE_DIR",
     "DATA_DIR",
@@ -63,4 +120,5 @@ __all__ = [
     "DEFAULT_NUM_THREADS",
     "DEFAULT_TOP_K",
     "ensure_directories",
+    "validate_config",
 ]
