@@ -22,6 +22,7 @@ from config import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_COLLECTION_NAME,
     DEFAULT_DEVICE,
+    DEFAULT_EMBEDDING_BATCH_SIZE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_JSONL,
     LOG_DIR,
@@ -379,7 +380,7 @@ def build_vector_store(
             str(meta.get("chunk_id", f"chunk-{total_chunks + idx}"))
             for idx, meta in enumerate(batch_metadata)
         ]
-        embeddings = encoder.encode(batch_texts, batch_size=32)  # Исправлено: используем фиксированный batch_size для encode
+        embeddings = encoder.encode(batch_texts, batch_size=DEFAULT_EMBEDDING_BATCH_SIZE)
         collection.add(
             ids=batch_ids,
             documents=batch_texts,

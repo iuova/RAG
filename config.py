@@ -6,6 +6,15 @@ from pathlib import Path
 
 from error_handling import ValidationError
 
+# Загрузка переменных окружения из .env файла (если установлен python-dotenv)
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    # python-dotenv не установлен, используем только системные переменные окружения
+    pass
+
 # Base paths ---------------------------------------------------------------
 BASE_DIR: Path = Path(__file__).resolve().parent
 DATA_DIR: Path = BASE_DIR / "data"
@@ -16,7 +25,7 @@ EXAMPLES_DIR: Path = BASE_DIR / "examples"
 
 # Default resources --------------------------------------------------------
 DEFAULT_JSONL: Path = DATA_DIR / "data_for_RAG.json"
-DEFAULT_COLLECTION_NAME: str = "docs"
+DEFAULT_COLLECTION_NAME: str = os.environ.get("RAG_COLLECTION_NAME", "docs")
 DEFAULT_EMBEDDING_MODEL: str = os.environ.get(
     "RAG_EMBEDDING_MODEL",
     "BAAI/bge-small-en-v1.5",
@@ -28,14 +37,15 @@ DEFAULT_MODEL_FILENAME: str = os.environ.get(
 DEFAULT_DEVICE: str = os.environ.get("RAG_DEVICE", "auto")
 
 # Runtime tuning -----------------------------------------------------------
-DEFAULT_CHUNK_SIZE: int = int(os.environ.get("RAG_CHUNK_SIZE", 1000))
-DEFAULT_CHUNK_OVERLAP: int = int(os.environ.get("RAG_CHUNK_OVERLAP", 120))
-DEFAULT_BATCH_SIZE: int = int(os.environ.get("RAG_BATCH_SIZE", 128))
-DEFAULT_CONTEXT_LENGTH: int = int(os.environ.get("RAG_CONTEXT_LENGTH", 4096))
-DEFAULT_MAX_NEW_TOKENS: int = int(os.environ.get("RAG_MAX_NEW_TOKENS", 512))
-DEFAULT_TEMPERATURE: float = float(os.environ.get("RAG_TEMPERATURE", 0.1))
-DEFAULT_NUM_THREADS: int = int(os.environ.get("RAG_NUM_THREADS", 32))
-DEFAULT_TOP_K: int = int(os.environ.get("RAG_TOP_K", 10))
+DEFAULT_CHUNK_SIZE: int = int(os.environ.get("RAG_CHUNK_SIZE", "1000"))
+DEFAULT_CHUNK_OVERLAP: int = int(os.environ.get("RAG_CHUNK_OVERLAP", "120"))
+DEFAULT_BATCH_SIZE: int = int(os.environ.get("RAG_BATCH_SIZE", "128"))
+DEFAULT_EMBEDDING_BATCH_SIZE: int = int(os.environ.get("RAG_EMBEDDING_BATCH_SIZE", "32"))
+DEFAULT_CONTEXT_LENGTH: int = int(os.environ.get("RAG_CONTEXT_LENGTH", "4096"))
+DEFAULT_MAX_NEW_TOKENS: int = int(os.environ.get("RAG_MAX_NEW_TOKENS", "512"))
+DEFAULT_TEMPERATURE: float = float(os.environ.get("RAG_TEMPERATURE", "0.1"))
+DEFAULT_NUM_THREADS: int = int(os.environ.get("RAG_NUM_THREADS", "32"))
+DEFAULT_TOP_K: int = int(os.environ.get("RAG_TOP_K", "10"))
 
 
 def ensure_directories() -> None:
@@ -69,6 +79,12 @@ def validate_config() -> None:
     if DEFAULT_BATCH_SIZE <= 0:
         raise ValidationError(
             f"batch_size должен быть положительным числом, получено: {DEFAULT_BATCH_SIZE}"
+        )
+
+    if DEFAULT_EMBEDDING_BATCH_SIZE <= 0:
+        raise ValidationError(
+            f"embedding_batch_size должен быть положительным числом, "
+            f"получено: {DEFAULT_EMBEDDING_BATCH_SIZE}"
         )
 
     if DEFAULT_TOP_K <= 0:
@@ -114,6 +130,7 @@ __all__ = [
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_CHUNK_OVERLAP",
     "DEFAULT_BATCH_SIZE",
+    "DEFAULT_EMBEDDING_BATCH_SIZE",
     "DEFAULT_CONTEXT_LENGTH",
     "DEFAULT_MAX_NEW_TOKENS",
     "DEFAULT_TEMPERATURE",

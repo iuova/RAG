@@ -28,37 +28,15 @@ from error_handling import (
     ModelLoadError,
     format_error_for_user,
 )
+from models.llm_cache import get_model_cache
 from rag_core import (
     create_query_embedding,
     print_search_results,
     search_documents,
 )
+from utils.validators import validate_question, validate_top_k
 
 warnings.filterwarnings('ignore')
-
-# Глобальные переменные для кэширования модели
-_cached_model: Optional[AutoModelForCausalLM] = None
-_cached_tokenizer: Optional[AutoTokenizer] = None
-_cached_model_name: Optional[str] = None
-_cached_device: Optional[str] = None
-
-
-def _resolve_device(device: str) -> str:
-    """Normalize device strings with auto-detection.
-
-    Args:
-        device: Строка устройства
-
-    Returns:
-        Нормализованное устройство
-    """
-    lowered = device.lower()
-    if lowered == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    if lowered == "cuda" and not torch.cuda.is_available():
-        logging.warning("CUDA запрошена, но недоступна. Используем CPU.")
-        return "cpu"
-    return lowered
 
 
 def format_prompt_for_llm(question: str, contexts: List[str]) -> str:
@@ -156,8 +134,8 @@ def generate_answer_with_llm(
 
 
 def run_llm_rag_query(
-    model,
-    tokenizer,
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
     collection,
     encoder,
     question: str,
@@ -175,9 +153,17 @@ def run_llm_rag_query(
         top_k: Количество документов для возврата
         device: Устройство для генерации
     """
+    # Валидация входных данных
+    try:
+        question = validate_question(question)
+        top_k = validate_top_k(top_k)
+    except Exception as exc:
+        print(f"Ошибка валидации: {exc}")
+        return
+
     print(f"Ищем релевантные документы для: '{question}'")
 
-    runtime_device = _resolve_device(device)
+    runtime_device = device
 
     # Получаем embeddings для запроса
     try:
@@ -253,53 +239,17 @@ def load_llm_model(model_name: str, device: str) -> Tuple[Optional[AutoModelForC
 
     Returns:
         Кортеж (model, tokenizer) или (None, None) при ошибке
+
+    Raises:
+        ModelLoadError: При ошибке загрузки модели
     """
-    global _cached_model, _cached_tokenizer, _cached_model_name, _cached_device
+    cache = get_model_cache()
+    model, tokenizer = cache.get_model(model_name, device)
 
-    resolved_device = _resolve_device(device)
+    if model is None or tokenizer is None:
+        raise ModelLoadError(f"Не удалось загрузить модель: {model_name}")
 
-    # Проверяем, загружена ли уже модель с теми же параметрами
-    if (_cached_model is not None and
-        _cached_tokenizer is not None and
-        _cached_model_name == model_name and
-        _cached_device == resolved_device):
-        print(f"Модель {model_name} уже загружена в память, используем кэш.")
-        return _cached_model, _cached_tokenizer
-
-    print(f"Загружаем LLM модель: {model_name}")
-    print("Загружаем локальную модель (может занять время на инициализацию)...")
-
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if resolved_device == "cuda" else torch.float32,
-            device_map="auto" if resolved_device == "cuda" else None,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True,
-        )
-
-        if resolved_device == "cpu":
-            model = model.to(resolved_device)
-
-        model.eval()
-
-        # Устанавливаем pad_token если его нет
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        # Сохраняем в кэш
-        _cached_model = model
-        _cached_tokenizer = tokenizer
-        _cached_model_name = model_name
-        _cached_device = resolved_device
-
-        print("Модель успешно загружена и сохранена в кэш!")
-        return model, tokenizer
-
-    except Exception as e:
-        logging.exception("Ошибка загрузки модели")
-        raise ModelLoadError(f"Не удалось загрузить модель: {e}") from e
+    return model, tokenizer
 
 
 def main():
@@ -345,8 +295,16 @@ def main():
         print("Сначала запустите: python rag_index.py data/test_data.jsonl")
         return
 
+    # Валидация параметров
+    try:
+        from utils.validators import validate_collection_name
+        collection_name = validate_collection_name(args.collection)
+    except Exception as exc:
+        print(f"Ошибка валидации имени коллекции: {exc}")
+        return
+
     # Загружаем embeddings
-    runtime_device = _resolve_device(args.device)
+    runtime_device = args.device
 
     print("Загружаем модель embeddings...")
     try:
@@ -360,11 +318,11 @@ def main():
     print("Подключаемся к базе данных...")
     client = PersistentClient(path=str(CHROMA_DB_DIR))
     try:
-        collection = client.get_collection(args.collection)
+        collection = client.get_collection(collection_name)
     except Exception as exc:
         logging.error("Collection retrieval failed: %s", exc)
         print(
-            f"Коллекция '{args.collection}' не найдена. Запустите индексацию или проверьте имя коллекции."
+            f"Коллекция '{collection_name}' не найдена. Запустите индексацию или проверьте имя коллекции."
         )
         return
 
@@ -373,10 +331,6 @@ def main():
         model, tokenizer = load_llm_model(args.model, runtime_device)
     except ModelLoadError as exc:
         print(format_error_for_user(exc))
-        return
-
-    if model is None or tokenizer is None:
-        print("Не удалось загрузить LLM модель.")
         return
 
     print("Система готова к работе!")

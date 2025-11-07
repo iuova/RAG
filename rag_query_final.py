@@ -31,6 +31,7 @@ from rag_core import (
     print_search_results,
     search_documents,
 )
+from utils.validators import validate_question, validate_top_k, validate_collection_name
 
 
 def generate_intelligent_answer(
@@ -88,6 +89,14 @@ def run_final_rag(collection, encoder, question: str, top_k: int) -> None:
         question: Текст вопроса
         top_k: Количество документов для возврата
     """
+    # Валидация входных данных
+    try:
+        question = validate_question(question)
+        top_k = validate_top_k(top_k)
+    except Exception as exc:
+        print(f"Ошибка валидации: {exc}")
+        return
+
     print(f"Ищем информацию по запросу: '{question}'")
 
     # Получаем embeddings для запроса
@@ -169,15 +178,22 @@ def main():
         print(f"Ошибка загрузки модели эмбеддингов: {exc}")
         return
 
+    # Валидация параметров
+    try:
+        collection_name = validate_collection_name(args.collection)
+    except Exception as exc:
+        print(f"Ошибка валидации имени коллекции: {exc}")
+        return
+
     # Подключаемся к базе
     print("Подключаемся к базе данных...")
     client = PersistentClient(path=str(CHROMA_DB_DIR))
     try:
-        collection = client.get_collection(args.collection)
+        collection = client.get_collection(collection_name)
     except Exception as exc:
         logging.error("Collection retrieval failed: %s", exc)
         print(
-            f"Коллекция '{args.collection}' не найдена. Запустите индексацию или проверьте имя коллекции."
+            f"Коллекция '{collection_name}' не найдена. Запустите индексацию или проверьте имя коллекции."
         )
         return
 
